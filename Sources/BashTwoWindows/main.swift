@@ -399,7 +399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             return
         }
 
-        appendOutput("\n--- Bash execution ---\n")
+        appendOutput("\n--- Bash command ---\n\(trimmed)\n")
 
         let process = Process()
         let stdin = Pipe()
@@ -451,7 +451,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
         do {
             try process.run()
-            stdin.fileHandleForWriting.write(Data(script.utf8))
+            stdin.fileHandleForWriting.write(Data(trimmed.utf8))
             stdin.fileHandleForWriting.closeFile()
         } catch {
             appendOutput("\nCould not start /bin/bash:\n\(error)\n")
