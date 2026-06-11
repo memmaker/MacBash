@@ -163,6 +163,12 @@ final class CommandTextView: NSTextView {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
+    private static let worksheetFileName = ".worksheet.shw"
+    private static let worksheetVersionLine = "worksheet-version=1"
+    private static let worksheetFrameFormatLine = "frame-format=x,y,width,height"
+    private static let inputWindowFrameLinePrefix = "input-window="
+    private static let outputWindowFrameLinePrefix = "output-window="
+
     private var inputWindow: NSWindow!
     private var outputWindow: NSWindow!
 
@@ -171,11 +177,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     private var activeProcesses: [Process] = []
     private var workingDirectoryURL = AppDelegate.initialWorkingDirectoryURL()
+    private var inputTextWasChanged = false
+    private var isLoadingInputText = false
 
     private let terminalFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private let defaultInputWindowFrame = NSRect(x: 120, y: 460, width: 800, height: 360)
+    private let defaultOutputWindowFrame = NSRect(x: 120, y: 80, width: 800, height: 360)
+    private let defaultInputText = """
+    # Bash commands go here.
+    # Press Command+E to execute the command section at the cursor.
+    # Use lines starting with ### to separate command sections.
+
+    pwd
+    ls -la
+    """
     private lazy var linkDetector = try? NSDataDetector(
         types: NSTextCheckingResult.CheckingType.link.rawValue
     )
+
+    private struct WorksheetState {
+        let inputWindowFrame: NSRect
+        let outputWindowFrame: NSRect
+        let inputText: String
+        let restoresWindowFrames: Bool
+    }
+
+    private enum WorksheetError: LocalizedError {
+        case invalidHeader(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidHeader(let detail):
+                return "Invalid worksheet header: \(detail)"
+            }
+        }
+    }
 
     private func setTerminalString(_ text: String, in textView: NSTextView) {
         let attributedText = NSAttributedString(
@@ -233,8 +269,170 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     }
 
     private func setWorkingDirectory(_ url: URL) {
+        guard saveInputWorksheetIfNeeded(for: workingDirectoryURL) else {
+            return
+        }
+
         workingDirectoryURL = url
+        let worksheet = loadWorksheet(for: workingDirectoryURL)
+        setInputText(worksheet.inputText)
+        if worksheet.restoresWindowFrames {
+            restoreWindowFrames(from: worksheet)
+        }
         appendOutput("\n[Working directory: \(url.path)]\n")
+    }
+
+    private func worksheetURL(for directoryURL: URL) -> URL {
+        directoryURL.appendingPathComponent(Self.worksheetFileName, isDirectory: false)
+    }
+
+    private var defaultWorksheetState: WorksheetState {
+        WorksheetState(
+            inputWindowFrame: defaultInputWindowFrame,
+            outputWindowFrame: defaultOutputWindowFrame,
+            inputText: defaultInputText,
+            restoresWindowFrames: false
+        )
+    }
+
+    private func loadWorksheet(for directoryURL: URL) -> WorksheetState {
+        let worksheetURL = worksheetURL(for: directoryURL)
+
+        guard FileManager.default.fileExists(atPath: worksheetURL.path) else {
+            return defaultWorksheetState
+        }
+
+        do {
+            let worksheetText = try String(contentsOf: worksheetURL, encoding: .utf8)
+            return try parseWorksheet(worksheetText)
+        } catch {
+            reportWorksheetError("Could not load \(worksheetURL.path)", error: error)
+            return defaultWorksheetState
+        }
+    }
+
+    private func setInputText(_ inputText: String) {
+        isLoadingInputText = true
+        setTerminalString(inputText, in: inputTextView)
+        inputTextView.undoManager?.removeAllActions()
+        inputTextWasChanged = false
+        isLoadingInputText = false
+
+        let inputEnd = (inputTextView.string as NSString).length
+        inputTextView.setSelectedRange(NSRange(location: inputEnd, length: 0))
+    }
+
+    private func restoreWindowFrames(from worksheet: WorksheetState) {
+        inputWindow.setFrame(worksheet.inputWindowFrame, display: true)
+        outputWindow.setFrame(worksheet.outputWindowFrame, display: true)
+    }
+
+    @discardableResult
+    private func saveInputWorksheetIfNeeded(for directoryURL: URL, reportErrors: Bool = true) -> Bool {
+        guard inputTextWasChanged else {
+            return true
+        }
+
+        let worksheetURL = worksheetURL(for: directoryURL)
+
+        do {
+            try serializedWorksheet().write(to: worksheetURL, atomically: true, encoding: .utf8)
+            inputTextWasChanged = false
+            return true
+        } catch {
+            if reportErrors {
+                reportWorksheetError("Could not save \(worksheetURL.path)", error: error)
+            } else {
+                NSLog("Could not save %@: %@", worksheetURL.path, String(describing: error))
+            }
+
+            return false
+        }
+    }
+
+    private func serializedWorksheet() -> String {
+        [
+            Self.worksheetVersionLine,
+            Self.worksheetFrameFormatLine,
+            "\(Self.inputWindowFrameLinePrefix)\(serializedFrame(inputWindow.frame))",
+            "\(Self.outputWindowFrameLinePrefix)\(serializedFrame(outputWindow.frame))",
+            "",
+            inputTextView.string
+        ].joined(separator: "\n")
+    }
+
+    private func serializedFrame(_ frame: NSRect) -> String {
+        "\(frame.origin.x),\(frame.origin.y),\(frame.width),\(frame.height)"
+    }
+
+    private func parseWorksheet(_ worksheetText: String) throws -> WorksheetState {
+        guard let separatorRange = worksheetText.range(of: "\n\n") else {
+            throw WorksheetError.invalidHeader("missing blank line after header")
+        }
+
+        let headerText = String(worksheetText[..<separatorRange.lowerBound])
+        let inputText = String(worksheetText[separatorRange.upperBound...])
+        let headerLines = headerText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        guard headerLines.count == 4 else {
+            throw WorksheetError.invalidHeader("expected 4 header lines")
+        }
+
+        guard headerLines[0] == Self.worksheetVersionLine else {
+            throw WorksheetError.invalidHeader("expected \(Self.worksheetVersionLine)")
+        }
+
+        guard headerLines[1] == Self.worksheetFrameFormatLine else {
+            throw WorksheetError.invalidHeader("expected \(Self.worksheetFrameFormatLine)")
+        }
+
+        return WorksheetState(
+            inputWindowFrame: try parseFrameLine(
+                headerLines[2],
+                prefix: Self.inputWindowFrameLinePrefix
+            ),
+            outputWindowFrame: try parseFrameLine(
+                headerLines[3],
+                prefix: Self.outputWindowFrameLinePrefix
+            ),
+            inputText: inputText,
+            restoresWindowFrames: true
+        )
+    }
+
+    private func parseFrameLine(_ line: String, prefix: String) throws -> NSRect {
+        guard line.hasPrefix(prefix) else {
+            throw WorksheetError.invalidHeader("expected \(prefix)")
+        }
+
+        let valueText = String(line.dropFirst(prefix.count))
+        let values = valueText
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+
+        guard values.count == 4,
+              let x = Double(values[0]),
+              let y = Double(values[1]),
+              let width = Double(values[2]),
+              let height = Double(values[3]),
+              width > 0,
+              height > 0 else {
+            throw WorksheetError.invalidHeader("invalid frame values for \(prefix)")
+        }
+
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    private func reportWorksheetError(_ message: String, error: Error) {
+        let output = "\n[\(message): \(error)]\n"
+
+        if outputWindow != nil {
+            appendOutput(output)
+        } else {
+            NSLog("%@", output)
+        }
     }
 
     private func configureTerminalTextView(_ textView: NSTextView, editable: Bool) {
@@ -300,20 +498,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        saveInputWorksheetIfNeeded(for: workingDirectoryURL, reportErrors: false)
+
         for process in activeProcesses where process.isRunning {
             process.terminate()
         }
     }
 
     private func setUpWindows() {
-        setTerminalString("""
-        # Bash commands go here.
-        # Press Command+E to execute the command section at the cursor.
-        # Use lines starting with ### to separate command sections.
+        let worksheet = loadWorksheet(for: workingDirectoryURL)
 
-        pwd
-        ls -la
-        """, in: inputTextView)
+        inputTextView.delegate = self
+        setInputText(worksheet.inputText)
 
         inputTextView.executeHandler = { [weak self] script in
             self?.executeInBash(script)
@@ -326,13 +522,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
         inputWindow = makeWindow(
             title: "Input - Command+E executes Bash",
-            frame: NSRect(x: 120, y: 460, width: 800, height: 360),
+            frame: worksheet.inputWindowFrame,
             contentView: makeScrollView(textView: inputTextView, editable: true)
         )
 
         outputWindow = makeWindow(
             title: "Output",
-            frame: NSRect(x: 120, y: 80, width: 800, height: 360),
+            frame: worksheet.outputWindowFrame,
             contentView: makeScrollView(textView: outputTextView, editable: false)
         )
 
@@ -414,7 +610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
         var environment = ProcessInfo.processInfo.environment
         environment["PWD"] = workingDirectoryURL.path
-        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:~/homebrew/bin"
+        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:~/bin:~/homebrew/bin"
 
         process.environment = environment
         process.standardInput = stdin
@@ -518,6 +714,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         }
 
         return false
+    }
+
+    func textDidChange(_ notification: Notification) {
+        guard let textView = notification.object as? NSTextView,
+              textView === inputTextView,
+              !isLoadingInputText else {
+            return
+        }
+
+        inputTextWasChanged = true
     }
 
     private func setUpMainMenu() {

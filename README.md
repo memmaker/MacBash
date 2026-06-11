@@ -106,6 +106,9 @@ MACOSX_DEPLOYMENT_TARGET=14.0 ./build.sh
 - stdin, stdout und stderr laufen ueber Pipes.
 - Das Arbeitsverzeichnis der Bash wird beim App-Start aus der Umgebung uebernommen.
 - Ueber File > Choose Working Directory... kannst du per Finder-Auswahldialog ein anderes Arbeitsverzeichnis fuer neue Bash-Ausfuehrungen waehlen.
+- Das Eingabefenster laedt beim Start und beim Wechsel des Arbeitsverzeichnisses .worksheet.shw aus dem Arbeitsverzeichnis, falls die Datei existiert.
+- Sobald der Inhalt des Eingabefensters geaendert wurde, wird er beim Beenden oder vor einem Arbeitsverzeichniswechsel als .worksheet.shw im aktuellen Arbeitsverzeichnis gespeichert.
+- .worksheet.shw enthaelt zuerst einen einfachen Header mit den Geometrien beider Fenster; nach einer Leerzeile folgt der Textpuffer des Eingabefensters.
 - PATH wird gesetzt auf:
 
 ```text
