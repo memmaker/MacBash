@@ -148,7 +148,9 @@ final class CommandTextView: NSTextView {
         var lines: [String] = []
 
         command.enumerateLines { line, _ in
-            guard !line.hasPrefix("###") else {
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+
+            guard !trimmedLine.isEmpty, !trimmedLine.hasPrefix("#") else {
                 return
             }
 
@@ -392,14 +394,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     }
 
     private func executeInBash(_ script: String) {
-        let trimmed = script.trimmingCharacters(in: .whitespacesAndNewlines)
+        let command = script.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !trimmed.isEmpty else {
+        guard !command.isEmpty else {
             appendOutput("\n[Nothing to execute]\n")
             return
         }
 
-        appendOutput("\n--- Bash command ---\n\(trimmed)\n")
+        appendOutput(commandOutputHeader(for: command))
 
         let process = Process()
         let stdin = Pipe()
@@ -451,12 +453,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
         do {
             try process.run()
-            stdin.fileHandleForWriting.write(Data(trimmed.utf8))
+            stdin.fileHandleForWriting.write(Data(command.utf8))
             stdin.fileHandleForWriting.closeFile()
         } catch {
             appendOutput("\nCould not start /bin/bash:\n\(error)\n")
             activeProcesses.removeAll { $0 === process }
         }
+    }
+
+    private func commandOutputHeader(for command: String) -> String {
+        if command.contains("\n") {
+            return "\n--- Command begin ---\n\(command)\n--- Command end ---\n"
+        }
+
+        return "\n--- Cmd: \(command) ---\n"
     }
 
     private func appendOutput(_ text: String) {
