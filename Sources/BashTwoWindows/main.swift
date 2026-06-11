@@ -515,7 +515,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             self?.executeInBash(script)
         }
 
-        setTerminalString("Output will appear here.\n", in: outputTextView)
         outputTextView.isEditable = false
         outputTextView.isSelectable = true
         outputTextView.delegate = self
