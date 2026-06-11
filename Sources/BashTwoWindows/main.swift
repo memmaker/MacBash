@@ -10,9 +10,9 @@ final class CommandTextView: NSTextView {
         let hasOption = flags.contains(.option)
         let key = event.charactersIgnoringModifiers?.lowercased()
 
-        let isControlE = hasControl && !hasCommand && !hasOption && (key == "e" || event.keyCode == 14)
+        let isCommandE = hasCommand && !hasControl && !hasOption && (key == "e" || event.keyCode == 14)
 
-        if isControlE {
+        if isCommandE {
             executeHandler?(commandTextAtCursor())
             return
         }
@@ -308,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     private func setUpWindows() {
         setTerminalString("""
         # Bash commands go here.
-        # Press Ctrl+E to execute the command section at the cursor.
+        # Press Command+E to execute the command section at the cursor.
         # Use lines starting with ### to separate command sections.
 
         pwd
@@ -325,7 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         outputTextView.delegate = self
 
         inputWindow = makeWindow(
-            title: "Input - Ctrl+E executes Bash",
+            title: "Input - Command+E executes Bash",
             frame: NSRect(x: 120, y: 460, width: 800, height: 360),
             contentView: makeScrollView(textView: inputTextView, editable: true)
         )

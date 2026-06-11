@@ -7,7 +7,7 @@ Die App startet zwei Fenster:
 1. Input: mehrzeiliges Textfeld fuer Bash-Befehle.
 2. Output: zeigt stdout und stderr der Bash-Ausfuehrung.
 
-Im Eingabefenster fuehrt Ctrl+E den kompletten Inhalt des Textfelds mit /bin/bash aus.
+Im Eingabefenster fuehrt Command+E den Befehlsabschnitt an der Cursorposition mit /bin/bash aus.
 
 ## Voraussetzungen
 
