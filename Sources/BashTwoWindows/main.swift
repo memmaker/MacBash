@@ -13,15 +13,154 @@ final class CommandTextView: NSTextView {
         let isControlE = hasControl && !hasCommand && !hasOption && (key == "e" || event.keyCode == 14)
 
         if isControlE {
-            executeHandler?(string)
+            executeHandler?(commandTextAtCursor())
             return
         }
 
         super.keyDown(with: event)
     }
+
+    private func commandTextAtCursor() -> String {
+        let buffer = string as NSString
+        let bufferLength = buffer.length
+
+        guard bufferLength > 0 else {
+            return ""
+        }
+
+        let cursorLocation = min(selectedRange().location, bufferLength)
+        let lookupLocation = cursorLocation == bufferLength ? bufferLength - 1 : cursorLocation
+
+        var currentLineStart = 0
+        var currentLineEnd = 0
+        var currentContentsEnd = 0
+        buffer.getLineStart(
+            &currentLineStart,
+            end: &currentLineEnd,
+            contentsEnd: &currentContentsEnd,
+            for: NSRange(location: lookupLocation, length: 0)
+        )
+
+        guard !Self.isCommandDelimiterLine(
+            in: buffer,
+            lineStart: currentLineStart,
+            contentsEnd: currentContentsEnd
+        ) else {
+            return ""
+        }
+
+        let commandStart = Self.commandStart(
+            in: buffer,
+            beforeLineStartingAt: currentLineStart
+        )
+        let commandEnd = Self.commandEnd(
+            in: buffer,
+            afterLineEndingAt: currentLineEnd
+        )
+        let commandRange = NSRange(
+            location: commandStart,
+            length: max(0, commandEnd - commandStart)
+        )
+
+        let command = buffer.substring(with: commandRange)
+        return Self.cleanedCommand(command)
+    }
+
+    private static func commandStart(in buffer: NSString, beforeLineStartingAt lineStart: Int) -> Int {
+        var scanLineStart = lineStart
+
+        while scanLineStart > 0 {
+            var previousLineStart = 0
+            var previousLineEnd = 0
+            var previousContentsEnd = 0
+            buffer.getLineStart(
+                &previousLineStart,
+                end: &previousLineEnd,
+                contentsEnd: &previousContentsEnd,
+                for: NSRange(location: scanLineStart - 1, length: 0)
+            )
+
+            if isCommandDelimiterLine(
+                in: buffer,
+                lineStart: previousLineStart,
+                contentsEnd: previousContentsEnd
+            ) {
+                return previousLineEnd
+            }
+
+            guard previousLineStart < scanLineStart else {
+                break
+            }
+
+            scanLineStart = previousLineStart
+        }
+
+        return 0
+    }
+
+    private static func commandEnd(in buffer: NSString, afterLineEndingAt lineEnd: Int) -> Int {
+        var scanLocation = lineEnd
+
+        while scanLocation < buffer.length {
+            var nextLineStart = 0
+            var nextLineEnd = 0
+            var nextContentsEnd = 0
+            buffer.getLineStart(
+                &nextLineStart,
+                end: &nextLineEnd,
+                contentsEnd: &nextContentsEnd,
+                for: NSRange(location: scanLocation, length: 0)
+            )
+
+            if isCommandDelimiterLine(
+                in: buffer,
+                lineStart: nextLineStart,
+                contentsEnd: nextContentsEnd
+            ) {
+                return nextLineStart
+            }
+
+            guard nextLineEnd > scanLocation else {
+                break
+            }
+
+            scanLocation = nextLineEnd
+        }
+
+        return buffer.length
+    }
+
+    private static func isCommandDelimiterLine(
+        in buffer: NSString,
+        lineStart: Int,
+        contentsEnd: Int
+    ) -> Bool {
+        let lineLength = contentsEnd - lineStart
+
+        guard lineLength >= 3 else {
+            return false
+        }
+
+        return buffer.substring(with: NSRange(location: lineStart, length: 3)) == "###"
+    }
+
+    private static func cleanedCommand(_ command: String) -> String {
+        var lines: [String] = []
+
+        command.enumerateLines { line, _ in
+            guard !line.hasPrefix("###") else {
+                return
+            }
+
+            lines.append(line)
+        }
+
+        return lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     private var inputWindow: NSWindow!
     private var outputWindow: NSWindow!
 
@@ -32,6 +171,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var workingDirectoryURL = AppDelegate.initialWorkingDirectoryURL()
 
     private let terminalFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private lazy var linkDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue
+    )
 
     private func setTerminalString(_ text: String, in textView: NSTextView) {
         let attributedText = NSAttributedString(
@@ -101,6 +243,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         textView.font = terminalFont
         textView.defaultParagraphStyle = terminalParagraphStyle
         textView.typingAttributes = terminalAttributes
+        textView.linkTextAttributes = [
+            .foregroundColor: NSColor.linkColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ]
 
         textView.isEditable = editable
         textView.isSelectable = true
@@ -140,7 +286,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpMainMenu()
         setUpWindows()
-        NSApp.activate(ignoringOtherApps: true)
+
+        DispatchQueue.main.async { [weak self] in
+            self?.bringWindowsToFrontAndFocusInput()
+        }
     }
 
 
@@ -157,7 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setUpWindows() {
         setTerminalString("""
         # Bash commands go here.
-        # Press Ctrl+E to execute the whole text.
+        # Press Ctrl+E to execute the command section at the cursor.
+        # Use lines starting with ### to separate command sections.
 
         pwd
         ls -la
@@ -170,6 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setTerminalString("Output will appear here.\n", in: outputTextView)
         outputTextView.isEditable = false
         outputTextView.isSelectable = true
+        outputTextView.delegate = self
 
         inputWindow = makeWindow(
             title: "Input - Ctrl+E executes Bash",
@@ -183,8 +334,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             contentView: makeScrollView(textView: outputTextView, editable: false)
         )
 
+        bringWindowsToFrontAndFocusInput()
+    }
+
+    private func bringWindowsToFrontAndFocusInput() {
+        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+
+        outputWindow.orderFrontRegardless()
+        inputWindow.orderFrontRegardless()
         inputWindow.makeKeyAndOrderFront(nil)
-        outputWindow.orderFront(nil)
+
+        let inputEnd = (inputTextView.string as NSString).length
+        inputTextView.setSelectedRange(NSRange(location: inputEnd, length: 0))
         inputWindow.makeFirstResponder(inputTextView)
     }
 
@@ -305,7 +466,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         outputTextView.textStorage?.append(attributedText)
+        refreshOutputLinks()
         outputTextView.scrollToEndOfDocument(nil)
+    }
+
+    private func refreshOutputLinks() {
+        guard let linkDetector, let textStorage = outputTextView.textStorage else {
+            return
+        }
+
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        guard fullRange.length > 0 else {
+            return
+        }
+
+        textStorage.removeAttribute(.link, range: fullRange)
+
+        let output = textStorage.string
+        linkDetector.enumerateMatches(in: output, options: [], range: fullRange) { result, _, _ in
+            guard let result, let url = result.url else {
+                return
+            }
+
+            textStorage.addAttribute(.link, value: url, range: result.range)
+        }
+    }
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard textView === outputTextView else {
+            return false
+        }
+
+        if let url = link as? URL {
+            NSWorkspace.shared.open(url)
+            return true
+        }
+
+        if let linkText = link as? String, let url = URL(string: linkText) {
+            NSWorkspace.shared.open(url)
+            return true
+        }
+
+        return false
     }
 
     private func setUpMainMenu() {
@@ -361,6 +563,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
         editMenuItem.submenu = editMenu
+
+        let windowMenuItem = NSMenuItem()
+        mainMenu.addItem(windowMenuItem)
+
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(
+            withTitle: "Minimize",
+            action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m"
+        )
+        windowMenu.addItem(
+            withTitle: "Zoom",
+            action: #selector(NSWindow.performZoom(_:)),
+            keyEquivalent: ""
+        )
+        windowMenu.addItem(NSMenuItem.separator())
+        windowMenu.addItem(
+            withTitle: "Bring All to Front",
+            action: #selector(NSApplication.arrangeInFront(_:)),
+            keyEquivalent: ""
+        )
+        windowMenuItem.submenu = windowMenu
+        NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = mainMenu
     }
