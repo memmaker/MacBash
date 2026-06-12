@@ -59,6 +59,12 @@ build() {
 
   cp "$EXECUTABLE" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
+  # Copy app icon if present
+  ICON_SRC="$SCRIPT_DIR/Resources/AppIcon.icns"
+  if [[ -f "$ICON_SRC" ]]; then
+    cp "$ICON_SRC" "$APP_DIR/Contents/Resources/AppIcon.icns"
+  fi
+
   cat > "$APP_DIR/Contents/Info.plist" <<EOF_PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -94,6 +100,9 @@ build() {
 
     <key>NSHighResolutionCapable</key>
     <true/>
+
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
 </dict>
 </plist>
 EOF_PLIST
